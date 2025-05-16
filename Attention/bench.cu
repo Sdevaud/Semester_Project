@@ -90,7 +90,7 @@ void test_value(const float* A, const float* B, int M, int N) {
     return;
 }
 
-void print_matrix(const char* name, const float* mat, int rows, int cols, int precision) {
+void print_matrix(const char* name, const float* mat, int rows, int cols, int precision = 1) {
     printf("\n%s:\n", name);
     char format[16];
     snprintf(format, sizeof(format), "%%.%df ", precision);  // e.g. "%.2f "
@@ -108,11 +108,11 @@ void test_compute_S() {
     int N = 2048;
     int matsize = M * N;
     int size_QK = M * N * sizeof(float);
-    int size_S = M * M * sizeof(float);
+    int size_SP = M * M * sizeof(float);
 
     float *Q = (float*)malloc(size_QK);
     float *K = (float*)malloc(size_QK);
-    float *O = (float*)malloc(size_S); 
+    float *O = (float*)malloc(size_SP); 
 
     for (int i = 0; i < matsize; ++i) { 
         Q[i] = random_normal_clamped(-10, 10);
@@ -125,7 +125,7 @@ void test_compute_S() {
     float *Qd, *Kd, *Od;
     CUDA_CHECK(cudaMalloc(&Qd, size_QK));
     CUDA_CHECK(cudaMalloc(&Kd, size_QK));
-    CUDA_CHECK(cudaMalloc(&Od, size_S));
+    CUDA_CHECK(cudaMalloc(&Od, size_SP));
 
     CUDA_CHECK(cudaMemcpy(Qd, Q, size_QK, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(Kd, K, size_QK, cudaMemcpyHostToDevice));
@@ -134,12 +134,12 @@ void test_compute_S() {
     dim3 grid_size(M, M);
     compute_S<<<grid_size, block_size>>>(Qd, Kd, Od, M, N);
 
-    CUDA_CHECK(cudaMemcpy(O, Od, size_S, cudaMemcpyDeviceToHost)); 
+    CUDA_CHECK(cudaMemcpy(O, Od, size_SP, cudaMemcpyDeviceToHost)); 
 
 
     //print_matrix("O", O, M, M, 3);
 
-    float *test = (float*)malloc(size_S);
+    float *test = (float*)malloc(size_SP);
     matmul_S(Q, K, test, M, N, M);
     
     //print_matrix("test", test, M, M, 3);
@@ -167,17 +167,17 @@ int main() {
 
     //test_compute_S();
 
-    int M = 1024;
-    int N = 2048;
+    int M = 4;
+    int N = 8;
     int matsize = M * N;
     int size_QKV = M * N * sizeof(float);
-    int size_S = M * M * sizeof(float);
+    int size_SP = M * M * sizeof(float);
 
     float *Q = (float*)malloc(size_QKV);
     float *K = (float*)malloc(size_QKV);
     float *V = (float*)malloc(size_QKV); 
-    float *S = (float*)malloc(size_S);
-    float *P = (float*)malloc(size_S);
+    float *S = (float*)malloc(size_SP);
+    float *P = (float*)malloc(size_SP);
     float *O = (float*)malloc(size_QKV);
 
     for (int i = 0; i < matsize; ++i) { 
@@ -192,7 +192,7 @@ int main() {
     // we compute Q @ K.T = S
     CUDA_CHECK(cudaMalloc(&Qd, size_QKV));
     CUDA_CHECK(cudaMalloc(&Kd, size_QKV));
-    CUDA_CHECK(cudaMalloc(&Sd, size_S));
+    CUDA_CHECK(cudaMalloc(&Sd, size_SP));
 
     CUDA_CHECK(cudaMemcpy(Qd, Q, size_QKV, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(Kd, K, size_QKV, cudaMemcpyHostToDevice));
@@ -200,48 +200,56 @@ int main() {
     dim3 block_size_S(32);
     dim3 grid_size_S(M, M);
     compute_S<<<grid_size_S, block_size_S>>>(Qd, Kd, Sd, M, N);
-    CUDA_CHECK(cudaMemcpy(S, Sd, size_S, cudaMemcpyDeviceToHost)); 
+    CUDA_CHECK(cudaMemcpy(S, Sd, size_SP, cudaMemcpyDeviceToHost)); 
+
+    cudaFree(Qd);
+    cudaFree(Kd);
 
 
     // we compute softmax(S) = P
-    CUDA_CHECK(cudaMalloc(&Sd, size_S));
-    CUDA_CHECK(cudaMalloc(&Pd, size_S));
+    CUDA_CHECK(cudaMalloc(&Sd, size_SP));
+    CUDA_CHECK(cudaMalloc(&Pd, size_SP));
+
+    CUDA_CHECK(cudaMemcpy(Sd, S, size_SP, cudaMemcpyHostToDevice));
 
     dim3 block_size_P(1024);
     dim3 grid_size_P(M);
-    softmax_kernel_3<<<grid_size_P, block_size_P>>>(Sd, Pd, M, N);
-    CUDA_CHECK(cudaMemcpy(P, Pd, size_S, cudaMemcpyDeviceToHost));
+    softmax_kernel_3<<<grid_size_P, block_size_P>>>(Sd, Pd, M, M);
+    CUDA_CHECK(cudaMemcpy(P, Pd, size_SP, cudaMemcpyDeviceToHost));
+
+    print_matrix("P", P, M, M, 3);
+
+    cudaFree(Sd);
 
     //we compute flash attention P @ V = O
-    CUDA_CHECK(cudaMalloc(&Pd, size_S));
+    CUDA_CHECK(cudaMalloc(&Pd, size_SP));
     CUDA_CHECK(cudaMalloc(&Vd, size_QKV));
+    CUDA_CHECK(cudaMalloc(&Od, size_QKV));
 
-    CUDA_CHECK(cudaMemcpy(Pd, P, size_S, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(Pd, P, size_SP, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(Vd, V, size_QKV, cudaMemcpyHostToDevice));
 
     dim3 block_size_O(32);
     dim3 grid_size_O(M, M);
-    compute_O<<<grid_size_O, block_size_O>>>(Pd, Vd, Od, M, N, M);
+    compute_O<<<grid_size_O, block_size_O>>>(Pd, Vd, Od, M, M, N);
     CUDA_CHECK(cudaMemcpy(O, Od, size_QKV, cudaMemcpyDeviceToHost));
+    cudaFree(Vd);
+    cudaFree(Pd);
+    cudaFree(Od);
+
+
 
     float *test = (float*)malloc(size_QKV);
     easy_flash_attention(Q, K, V, S, P, test, M, N);
     test_value(O, test, M, N);
+    print_matrix("O", O, M, N, 3);
+    print_matrix("test", test, M, N, 3);
 
-
-    
     free(Q);
     free(K);
     free(V);
     free(S);
     free(P);
     free(O);
-    free(test);
-    cudaFree(Qd);
-    cudaFree(Kd);
-    cudaFree(Vd);
-    cudaFree(Sd);
-    cudaFree(Pd);
-    cudaFree(Od);
-
     
 }
