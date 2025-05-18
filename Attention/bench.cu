@@ -81,7 +81,7 @@ void test_value(const float* A, const float* B, int M, int N) {
 
     for (int i = 0; i < M; ++i) {
         for (int j = 0; j < N; ++j) {
-            if (abs(A[i * N + j]-B[i * N + j]) > 0.0001) 
+            if (abs(A[i * N + j]-B[i * N + j]) > 1e-6f) 
                 result = false;
         }
     }
@@ -163,6 +163,7 @@ void easy_flash_attention(float* Q, float* K, float* V, float* S, float* P, floa
     matmul(P, V, O, M, M, N);
 }
 
+
 int main() {
 
     //test_compute_S();
@@ -230,7 +231,7 @@ int main() {
     CUDA_CHECK(cudaMemcpy(Vd, V, size_QKV, cudaMemcpyHostToDevice));
 
     dim3 block_size_O(32);
-    dim3 grid_size_O(M, M);
+    dim3 grid_size_O(N, N);
     compute_O<<<grid_size_O, block_size_O>>>(Pd, Vd, Od, M, M, N);
     CUDA_CHECK(cudaMemcpy(O, Od, size_QKV, cudaMemcpyDeviceToHost));
     cudaFree(Vd);
@@ -242,8 +243,8 @@ int main() {
     float *test = (float*)malloc(size_QKV);
     easy_flash_attention(Q, K, V, S, P, test, M, N);
     test_value(O, test, M, N);
-    print_matrix("O", O, M, N, 3);
-    print_matrix("test", test, M, N, 3);
+    print_matrix("O", O, M, N, 12);
+    print_matrix("test", test, M, N, 12);
 
     free(Q);
     free(K);
